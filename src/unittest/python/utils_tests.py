@@ -2,7 +2,7 @@
 #
 #   This file is part of PyBuilder
 #
-#   Copyright 2011-2015 PyBuilder Team
+#   Copyright 2011-2020 PyBuilder Team
 #
 #   Licensed under the Apache License, Version 2.0 (the "License");
 #   you may not use this file except in compliance with the License.
@@ -20,16 +20,14 @@ import datetime
 import os
 import re
 import shutil
-import sys
 import tempfile
 import time
 import unittest
 from json import loads
-from os.path import normcase as nc
+from os.path import normcase as nc, dirname, join as jp, exists
 
 from pybuilder.errors import PyBuilderException
-from pybuilder.utils import (GlobExpression,
-                             Timer,
+from pybuilder.utils import (Timer,
                              apply_on_files,
                              as_list,
                              discover_files,
@@ -40,7 +38,6 @@ from pybuilder.utils import (GlobExpression,
                              mkdir,
                              render_report,
                              timedelta_in_millis,
-                             fork_process,
                              execute_command)
 from test_utils import patch, Mock
 
@@ -219,32 +216,8 @@ class DiscoverModulesTest(unittest.TestCase):
         self.assertEqual(["reactor_tests"], discover_modules_matching("/path/to/tests/", "*_tests"))
 
 
-class GlobExpressionTest(unittest.TestCase):
-    def test_static_expression_should_match_exact_file_name(self):
-        self.assertTrue(GlobExpression("spam.eggs").matches("spam.eggs"))
-
-    def test_static_expression_should_not_match_different_file_name(self):
-        self.assertFalse(GlobExpression("spam.eggs").matches("spam.egg"))
-
-    def test_dynamic_file_expression_should_match_any_character(self):
-        self.assertTrue(GlobExpression("spam.egg*").matches("spam.eggs"))
-
-    def test_dynamic_file_expression_should_match_no_character(self):
-        self.assertTrue(GlobExpression("spam.egg*").matches("spam.egg"))
-
-    def test_dynamic_file_expression_should_not_match_different_file_part(self):
-        self.assertFalse(GlobExpression("spam.egg*").matches("foo.spam.egg"))
-
-    def test_dynamic_file_expression_should_not_match_directory_part(self):
-        self.assertFalse(GlobExpression("*spam.egg").matches("foo/spam.egg"))
-
-    def test_dynamic_directory_expression_should_match_file_in_directory(self):
-        self.assertTrue(GlobExpression("**/spam.egg").matches("foo/spam.egg"))
-        self.assertTrue(GlobExpression("**/spam.egg").matches("bar/spam.egg"))
-
-
 class ApplyOnFilesTest(unittest.TestCase):
-    @patch("pybuilder.utils.os.walk", return_value=[("spam", [], ["a", "b", "c"])])
+    @patch("pybuilder.utils.iglob", return_value=["spam/a", "spam/b", "spam/c"])
     def test_should_apply_callback_to_all_files_when_expression_matches_all_files(self, walk):
         absolute_file_names = []
         relative_file_names = []
@@ -254,12 +227,12 @@ class ApplyOnFilesTest(unittest.TestCase):
             relative_file_names.append(relative_file_name)
 
         apply_on_files("spam", callback, "*")
-        self.assertEqual([nc("spam/a"), nc("spam/b"), nc("spam/c")], absolute_file_names)
+        self.assertEqual(["spam/a", "spam/b", "spam/c"], absolute_file_names)
         self.assertEqual(["a", "b", "c"], relative_file_names)
 
-        walk.assert_called_with("spam")
+        walk.assert_called_with(nc("spam/*"), recursive=True)
 
-    @patch("pybuilder.utils.os.walk", return_value=[("spam", [], ["a", "b", "c"])])
+    @patch("pybuilder.utils.iglob", return_value=["spam/a"])
     def test_should_apply_callback_to_one_file_when_expression_matches_one_file(self, walk):
         called_on_file = []
 
@@ -267,11 +240,11 @@ class ApplyOnFilesTest(unittest.TestCase):
             called_on_file.append(absolute_file_name)
 
         apply_on_files("spam", callback, "a")
-        self.assertEqual([nc("spam/a")], called_on_file)
+        self.assertEqual(["spam/a"], called_on_file)
 
-        walk.assert_called_with("spam")
+        walk.assert_called_with(nc("spam/a"), recursive=True)
 
-    @patch("pybuilder.utils.os.walk", return_value=[("spam", [], ["a"])])
+    @patch("pybuilder.utils.iglob", return_value=["spam/a"])
     def test_should_pass_additional_arguments_to_closure(self, walk):
         called_on_file = []
 
@@ -280,9 +253,9 @@ class ApplyOnFilesTest(unittest.TestCase):
             called_on_file.append(absolute_file_name)
 
         apply_on_files("spam", callback, "a", "additional argument")
-        self.assertEqual([nc("spam/a")], called_on_file)
+        self.assertEqual(["spam/a"], called_on_file)
 
-        walk.assert_called_with("spam")
+        walk.assert_called_with(nc("spam/a"), recursive=True)
 
 
 class MkdirTest(unittest.TestCase):
@@ -325,108 +298,57 @@ class MkdirTest(unittest.TestCase):
         self.assertFalse(os.path.isdir(self.any_directory))
 
 
-class ForkTest(unittest.TestCase):
-    def testForkNoException(self):
-        def test_func():
-            return "success"
+def fork_test_func_send_pickle():
+    class Foo(object):
+        @staticmethod
+        def bar():
+            pass
 
-        val = fork_process(Mock(), target=test_func)
+    class FooError(Exception):
+        def __init__(self, message):
+            super(Exception, self).__init__(message)
 
-        self.assertEqual(len(val), 2)
-        self.assertEqual(val[0], 0)
-        self.assertEqual(val[1], "success")
+    raise FooError(Foo.bar)
 
-    def testForkParamPassing(self):
-        def test_func(foo, bar):
-            return "%s%s" % (foo, bar)
 
-        val = fork_process(Mock(), target=test_func, kwargs={"foo": "foo", "bar": 10})
-        self.assertEqual(len(val), 2)
-        self.assertEqual(val[0], 0)
-        self.assertEqual(val[1], "foo10")
+def fork_test_func_success():
+    return "success"
 
-        val = fork_process(Mock(), target=test_func, args=("foo", 20))
-        self.assertEqual(len(val), 2)
-        self.assertEqual(val[0], 0)
-        self.assertEqual(val[1], "foo20")
 
-    def testForkWithException(self):
-        def test_func():
-            raise PyBuilderException("Test failure message")
+def fork_test_func_arg_passing(foo, bar):
+    return "%s%s" % (foo, bar)
 
-        try:
-            val = fork_process(Mock(), target=test_func)
-            val = fork_process(Mock(), target=test_func)
-            self.fail("should not have reached here, returned %s" % val)
-        except Exception:
-            ex_type, ex, tb = sys.exc_info()
-            self.assertEqual(ex_type, PyBuilderException)
-            self.assertEqual(ex.message, "Test failure message")
-            self.assertTrue(tb)
 
-    @unittest.skipIf(sys.platform == "win32", "Not on Windows")
-    def testForkWithValuePicklingError(self):
-        class FooError(Exception):
-            def __init__(self):
-                self.val = 'Blah'
+def fork_test_func_raise():
+    class FooError(Exception):
+        def __init__(self):
+            self.val = 'Blah'
 
-        def test_func():
-            return FooError()
+    raise FooError()
 
-        try:
-            fork_process(Mock(), target=test_func)
-            self.fail("should not have reached here")
-        except Exception:
-            ex_type, ex, tb = sys.exc_info()
-            self.assertEqual(ex_type, Exception)
-            self.assertTrue(str(ex).startswith("Fatal error occurred in the forked process"))
-            self.assertTrue("Can't pickle" in str(ex))
-            self.assertTrue("FooError" in str(ex))
 
-    @unittest.skipIf(sys.platform == "win32", "Not on Windows")
-    def testForkWithExceptionPicklingError(self):
-        class FooError(Exception):
-            def __init__(self):
-                self.val = 'Blah'
+def fork_test_func_return():
+    class FooError(Exception):
+        def __init__(self):
+            self.val = 'Blah'
 
-        def test_func():
-            raise FooError()
+    return FooError()
 
-        try:
-            val = fork_process(Mock(), target=test_func)
-            self.fail("should not have reached here, returned %s" % val)
-        except Exception:
-            ex_type, ex, tb = sys.exc_info()
-            self.assertEqual(ex_type, Exception)
-            self.assertTrue(str(ex).startswith("Fatal error occurred in the forked process"))
-            self.assertTrue("Can't pickle" in str(ex))
-            self.assertTrue("FooError" in str(ex))
 
-    @unittest.skipIf(sys.platform == "win32", "Not on Windows")
-    def testForkWithSendPicklingError(self):
-        class Foo(object):
-            @staticmethod
-            def bar():
-                pass
+def fork_test_func_exc():
+    raise PyBuilderException("Test failure message")
 
-        class FooError(Exception):
-            def __init__(self, message):
-                super(Exception, self).__init__(message)
 
-        def test_func():
-            raise FooError(Foo.bar)
-
-        try:
-            val = fork_process(Mock(), target=test_func)
-            self.fail("should not have reached here, returned %s" % val)
-        except Exception:
-            ex_type, ex, tb = sys.exc_info()
-            self.assertEqual(ex_type, Exception)
-            self.assertTrue(str(ex).startswith("Fatal error occurred in the forked process"))
-            self.assertTrue("Can't pickle" in str(ex))
-            self.assertTrue("FooError" in str(ex))
-            self.assertTrue("This error masked the send error '<function" in str(ex))
-            self.assertTrue("raise FooError(Foo.bar)" in str(ex))
+def find_project_base_dir():
+    cur_dir = dirname(nc(__file__))
+    while True:
+        if exists(jp(cur_dir, "build.py")):
+            return cur_dir
+        else:
+            new_cur_dir = nc(jp(cur_dir, ".."))
+            if new_cur_dir == cur_dir:
+                return None
+            cur_dir = new_cur_dir
 
 
 class CommandExecutionTest(unittest.TestCase):
