@@ -97,6 +97,7 @@ if __name__ == '__main__':
         package_data = $package_data,
         include_package_data = $include_package_data,
         install_requires = $dependencies,
+        extras_require = $extras_require,
         dependency_links = $dependency_links,
         zip_safe = $zip_safe,
         cmdclass = $cmd_class,
@@ -285,6 +286,7 @@ def render_setup_script(project):
         "package_data": build_package_data_string(project),
         "include_package_data": project.get_property("include_package_data", False),
         "dependencies": build_install_dependencies_string(project),
+        "extras_require": build_extras_require_string(project),
         "dependency_links": build_dependency_links_string(project),
         "remove_hardlink_capabilities_for_shared_filesystems": (
             "import os\ndel os.link"
@@ -618,7 +620,11 @@ def flatten_and_quote(requirements_file):
 
 
 def format_single_dependency(dependency):
-    return '%s%s' % (dependency.name, pip_utils.build_dependency_version_string(dependency))
+    result = '%s%s' % (dependency.name, pip_utils.build_dependency_version_string(dependency))
+    markers = getattr(dependency, 'markers', None)
+    if markers:
+        result = '%s; %s' % (result, markers)
+    return result
 
 
 def build_install_dependencies_string(project):
@@ -644,6 +650,24 @@ def build_install_dependencies_string(project):
             dependencies[i] = dep[1:-1]
 
     return build_string_from_array(dependencies)
+
+
+def build_extras_require_string(project):
+    extras = project.extras_dependencies
+    if not extras:
+        return "{}"
+
+    indent = 8
+
+    result = "{\n"
+    for extra_name in sorted(extras.keys()):
+        deps = extras[extra_name]
+        formatted = [format_single_dependency(dep) for dep in deps if isinstance(dep, Dependency) and not dep.url]
+        result += " " * (indent + 4)
+        result += "'%s': %s,\n" % (extra_name, build_string_from_array(formatted, indent + 8))
+    result = result[:-2] + "\n"
+    result += " " * indent + "}"
+    return result
 
 
 def build_dependency_links_string(project):

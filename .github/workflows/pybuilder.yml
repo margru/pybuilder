@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - master
+permissions:
+  contents: write
+
 jobs:
   build-primary:
     runs-on: ${{ matrix.os }}
@@ -19,7 +22,6 @@ jobs:
           - '3.12'
           - '3.11'
           - '3.10'
-          - '3.9'
         with-venv:
           - 'true'
           - 'false'
@@ -28,7 +30,9 @@ jobs:
       TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: ./.github/
         with:
           python-version: '${{ matrix.python-version }}'
@@ -37,6 +41,8 @@ jobs:
           deploy-on-python: '["3.13"]'
           deploy-on-os: '["Linux"]'
           deploy-on-branch: '["refs/heads/master"]'
+          release-app-id: ${{ secrets.PYBUILDER_RELEASE_APP_ID }}
+          release-app-private-key: ${{ secrets.PYBUILDER_RELEASE_APP_PRIVATE_KEY }}
   build-secondary:
     runs-on: ${{ matrix.os }}
     continue-on-error: false
@@ -53,7 +59,6 @@ jobs:
           - '3.12'
           - '3.11'
           - '3.10'
-          - '3.9'
         with-venv:
           - 'true'
           - 'false'
@@ -63,7 +68,9 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: ./.github/
         with:
           python-version: '${{ matrix.python-version }}'
@@ -85,7 +92,6 @@ jobs:
           - '3.15-dev'
           - '3.14t'
           - '3.13t'
-          - 'pypy-3.9'
           - 'pypy-3.10'
           - 'pypy-3.11'
         with-venv:
@@ -97,7 +103,9 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: ./.github/
         with:
           python-version: '${{ matrix.python-version }}'
