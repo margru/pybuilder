@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import sys
 from timeit import default_timer
+
+LOGGER = logging.getLogger(__name__)
 
 
 def run(args=None, options=None, env=None):
@@ -16,12 +19,21 @@ def run(args=None, options=None, env=None):
         args = sys.argv[1:]
     try:
         session = cli_run(args, options, env)
-        logging.warning(LogSession(session, start))
+        LOGGER.warning(LogSession(session, start))
     except ProcessCallFailedError as exception:
         print(f"subprocess call failed for {exception.cmd} with code {exception.code}")  # noqa: T201
         print(exception.out, file=sys.stdout, end="")  # noqa: T201
         print(exception.err, file=sys.stderr, end="")  # noqa: T201
         raise SystemExit(exception.code)  # noqa: B904
+    except OSError as exception:
+        if exception.errno == errno.EMFILE:
+            print(  # noqa: T201
+                "OSError: [Errno 24] Too many open files. You may need to increase your OS open files limit.\n"
+                "  On macOS/Linux, try 'ulimit -n 2048'.\n"
+                "  For Windows, this is not a common issue, but you can try to close some applications.",
+                file=sys.stderr,
+            )
+        raise
 
 
 class LogSession:
@@ -54,16 +66,17 @@ def run_with_catch(args=None, env=None):
     options = VirtualEnvOptions()
     try:
         run(args, options, env)
-    except (KeyboardInterrupt, SystemExit, Exception) as exception:
+    except (KeyboardInterrupt, SystemExit, Exception) as exception:  # noqa: BLE001
         try:
             if getattr(options, "with_traceback", False):
                 raise
             if not (isinstance(exception, SystemExit) and exception.code == 0):
-                logging.error("%s: %s", type(exception).__name__, exception)  # noqa: TRY400
+                LOGGER.error("%s: %s", type(exception).__name__, exception)  # noqa: TRY400
             code = exception.code if isinstance(exception, SystemExit) else 1
             sys.exit(code)
         finally:
-            logging.shutdown()  # force flush of log messages before the trace is printed
+            for handler in LOGGER.handlers:  # force flush of log messages before the trace is printed
+                handler.flush()
 
 
 if __name__ == "__main__":  # pragma: no cov

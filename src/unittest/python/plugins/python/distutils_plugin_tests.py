@@ -30,6 +30,7 @@ from pybuilder.errors import BuildFailedException
 from pybuilder.pip_utils import PIP_MODULE_STANZA
 from pybuilder.plugins.python.distutils_plugin import (build_data_files_string,
                                                        build_dependency_links_string,
+                                                       build_extras_require_string,
                                                        build_install_dependencies_string,
                                                        build_package_data_string,
                                                        build_entry_points_string,
@@ -183,6 +184,56 @@ class InstallDependenciesTest(unittest.TestCase):
 
         self.assertEqual(
             "['foo']", build_install_dependencies_string(self.project))
+
+
+class ExtrasRequireTest(unittest.TestCase):
+    def setUp(self):
+        self.project = Project(".")
+
+    def test_should_return_empty_dict_when_no_extras(self):
+        self.assertEqual("{}", build_extras_require_string(self.project))
+
+    def test_should_return_empty_dict_when_only_regular_dependencies(self):
+        self.project.depends_on("spam")
+        self.assertEqual("{}", build_extras_require_string(self.project))
+
+    def test_should_return_single_extra_with_single_dependency(self):
+        self.project.depends_on("spam", "0.7", extra="dev")
+        result = build_extras_require_string(self.project)
+        self.assertIn("'dev'", result)
+        self.assertIn("'spam>=0.7'", result)
+
+    def test_should_return_single_extra_with_multiple_dependencies(self):
+        self.project.depends_on("spam", "0.7", extra="dev")
+        self.project.depends_on("eggs", extra="dev")
+        result = build_extras_require_string(self.project)
+        self.assertIn("'dev'", result)
+        self.assertIn("'spam>=0.7'", result)
+        self.assertIn("'eggs'", result)
+
+    def test_should_return_multiple_extras(self):
+        self.project.depends_on("spam", extra="dev")
+        self.project.depends_on("eggs", extra="security")
+        result = build_extras_require_string(self.project)
+        self.assertIn("'dev'", result)
+        self.assertIn("'security'", result)
+        self.assertIn("'spam'", result)
+        self.assertIn("'eggs'", result)
+
+    def test_should_not_include_extras_in_install_dependencies(self):
+        self.project.depends_on("spam")
+        self.project.depends_on("eggs", extra="dev")
+        self.assertEqual("['spam']", build_install_dependencies_string(self.project))
+
+    def test_should_include_markers_in_extras_dependency(self):
+        self.project.depends_on("pywin32", ">=300", extra="windows", markers="sys_platform == 'win32'")
+        result = build_extras_require_string(self.project)
+        self.assertIn("pywin32>=300; sys_platform == 'win32'", result)
+
+    def test_should_include_markers_in_install_dependencies(self):
+        self.project.depends_on("pywin32", ">=300", markers="sys_platform == 'win32'")
+        result = build_install_dependencies_string(self.project)
+        self.assertIn("pywin32>=300; sys_platform == 'win32'", result)
 
 
 class DependencyLinksTest(unittest.TestCase):
@@ -389,8 +440,8 @@ class RenderSetupScriptTest(PyBuilderTestCase):
         self.assert_line_by_line_equal("""#!/usr/bin/env python
 #   -*- coding: utf-8 -*-
 
-from distutils.core import setup, Extension
-from distutils.core.command.install import install as _install
+from setuptools import setup, Extension
+from setuptools.command.install import install as _install
 
 
 class install(_install):
@@ -461,6 +512,7 @@ if __name__ == '__main__':
         },
         include_package_data = False,
         install_requires = ['sometool'],
+        extras_require = {},
         dependency_links = ['https://github.com/downloads/halimath/pyassert/pyassert-0.2.2.tar.gz'],
         zip_safe = True,
         cmdclass = {'install': install},
@@ -477,8 +529,8 @@ if __name__ == '__main__':
         self.assert_line_by_line_equal("""#!/usr/bin/env python
 #   -*- coding: utf-8 -*-
 
-from distutils.core import setup, Extension
-from distutils.core.command.install import install as _install
+from setuptools import setup, Extension
+from setuptools.command.install import install as _install
 
 
 class install(_install):
@@ -549,6 +601,7 @@ if __name__ == '__main__':
         },
         include_package_data = False,
         install_requires = ['sometool'],
+        extras_require = {},
         dependency_links = ['https://github.com/downloads/halimath/pyassert/pyassert-0.2.2.tar.gz'],
         zip_safe = True,
         cmdclass = {'install': install},
@@ -728,7 +781,8 @@ class ExecuteDistUtilsTest(PyBuilderTestCase):
         execute_distutils(self.project, MagicMock(Logger), self.pyb_env, commands)
 
         self.pyb_env.run_process_and_wait.assert_has_calls(
-            [call(self.pyb_env.executable + [ANY, cmd], ANY, ANY) for cmd in commands])
+            [call(self.pyb_env.executable + [ANY, ANY, cmd, self.project.expand_path("$dir_dist")], ANY, ANY) for cmd in
+             commands])
 
     @patch("pybuilder.plugins.python.distutils_plugin.os.mkdir")
     @patch("pybuilder.plugins.python.distutils_plugin.open", create=True)
@@ -737,7 +791,8 @@ class ExecuteDistUtilsTest(PyBuilderTestCase):
 
         execute_distutils(self.project, MagicMock(Logger), self.pyb_env, [commands])
 
-        self.pyb_env.run_process_and_wait.assert_has_calls([call(self.pyb_env.executable + [ANY] + commands, ANY, ANY)])
+        self.pyb_env.run_process_and_wait.assert_has_calls(
+            [call(self.pyb_env.executable + [ANY, ANY] + commands + [self.project.expand_path("$dir_dist")], ANY, ANY)])
 
 
 class UploadTests(PyBuilderTestCase):
@@ -909,8 +964,9 @@ class TasksTest(PyBuilderTestCase):
         build_binary_distribution(self.project, MagicMock(Logger), self.reactor)
 
         self.pyb_env.run_process_and_wait.assert_has_calls(
-            [call(self.pyb_env.executable + [ANY, "clean", "--all", "sdist"], ANY, ANY),
-             call(self.pyb_env.executable + [ANY, "clean", "--all", "bdist_dumb"], ANY, ANY),
+            [call(self.pyb_env.executable + [ANY, ANY, "--sdist", self.project.expand_path("$dir_dist")], ANY, ANY),
+             call(self.pyb_env.executable + [ANY, ANY, "--bdist_dumb", self.project.expand_path("$dir_dist")], ANY,
+                  ANY),
              call(self.pyb_env.executable + ["-m", "twine", "check",
                                              self.project.expand_path("$dir_dist", "dist", "file1"),
                                              self.project.expand_path("$dir_dist", "dist", "file2")], ANY, ANY)])
@@ -926,8 +982,11 @@ class TasksTest(PyBuilderTestCase):
         build_binary_distribution(self.project, MagicMock(Logger), self.reactor)
 
         self.pyb_env.run_process_and_wait.assert_has_calls(
-            [call(self.pyb_env.executable + [ANY, "clean", "--all", "sdist", "--formats", "bztar"], ANY, ANY),
-             call(self.pyb_env.executable + [ANY, "clean", "--all", "bdist_dumb"], ANY, ANY),
+            [call(self.pyb_env.executable + [ANY, ANY, "--sdist", "-C--formats", "-Cbztar",
+                                             self.project.expand_path("$dir_dist")],
+                  ANY, ANY),
+             call(self.pyb_env.executable + [ANY, ANY, "--bdist_dumb", self.project.expand_path("$dir_dist")], ANY,
+                  ANY),
              call(self.pyb_env.executable + ["-m", "twine", "check",
                                              self.project.expand_path("$dir_dist", "dist", "file1"),
                                              self.project.expand_path("$dir_dist", "dist", "file2")], ANY, ANY)])

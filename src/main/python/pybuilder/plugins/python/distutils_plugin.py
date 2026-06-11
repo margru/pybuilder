@@ -97,6 +97,7 @@ if __name__ == '__main__':
         package_data = $package_data,
         include_package_data = $include_package_data,
         install_requires = $dependencies,
+        extras_require = $extras_require,
         dependency_links = $dependency_links,
         zip_safe = $zip_safe,
         cmdclass = $cmd_class,
@@ -122,11 +123,12 @@ def as_str(value):
 def initialize_distutils_plugin(project):
     project.plugin_depends_on("pypandoc", "~=1.4")
     project.plugin_depends_on("twine", ">=1.15.0")
+    project.plugin_depends_on("setuptools", ">=76.0", eager_update=False)
+    project.plugin_depends_on("build", ">=1.3.0", eager_update=False)
     project.plugin_depends_on("toml", "~=0.10.0")
-    project.plugin_depends_on("setuptools", ">=38.6.0", eager_update=False)
     project.plugin_depends_on("wheel", ">=0.34.0", eager_update=False)
 
-    project.set_property_if_unset("distutils_commands", ["sdist", "bdist_wheel"])
+    project.set_property_if_unset("distutils_commands", ["sdist", "wheel"])
     project.set_property_if_unset("distutils_command_options", None)
 
     # Workaround for http://bugs.python.org/issue8876 , unable to build a bdist
@@ -136,8 +138,6 @@ def initialize_distutils_plugin(project):
         "Development Status :: 3 - Alpha",
         "Programming Language :: Python"
     ])
-    project.set_property_if_unset("distutils_use_setuptools", True)
-
     project.set_property_if_unset("distutils_fail_on_warnings", False)
 
     project.set_property_if_unset("distutils_upload_register", False)
@@ -259,7 +259,7 @@ def render_setup_script(project):
         setup_requires.append("cython")
 
     template_values = {
-        "module": "setuptools" if project.get_property("distutils_use_setuptools") else "distutils.core",
+        "module": "setuptools",
         "cython_imports": "",
         "cython_definitions": "",
         "cmd_class": "{'install': install}",
@@ -286,6 +286,7 @@ def render_setup_script(project):
         "package_data": build_package_data_string(project),
         "include_package_data": project.get_property("include_package_data", False),
         "dependencies": build_install_dependencies_string(project),
+        "extras_require": build_extras_require_string(project),
         "dependency_links": build_dependency_links_string(project),
         "remove_hardlink_capabilities_for_shared_filesystems": (
             "import os\ndel os.link"
@@ -446,7 +447,7 @@ def build_binary_distribution(project, logger, reactor):
 
     commands = [build_command_with_options(cmd, project.get_property("distutils_command_options"))
                 for cmd in as_list(project.get_property("distutils_commands"))]
-    execute_distutils(project, logger, reactor.pybuilder_venv, commands, True)
+    execute_distutils(project, logger, reactor.pybuilder_venv, commands)
     upload_check(project, logger, reactor)
 
 
@@ -527,19 +528,20 @@ def render_manifest_file(project):
 
 
 def build_command_with_options(command, distutils_command_options=None):
-    commands = [command]
+    if command == "bdist_wheel":
+        command = "wheel"
+    commands = [f"--{command}"]
     if distutils_command_options:
         try:
-            command_options = as_list(distutils_command_options[command])
-            commands.extend(command_options)
+            commands.extend([f"-C{cmd}" for cmd in as_list(distutils_command_options[command])])
         except KeyError:
             pass
     return commands
 
 
-def execute_distutils(project, logger, python_env, distutils_commands, clean=False):
+def execute_distutils(project, logger, python_env, distutils_commands):
     reports_dir = _prepare_reports_dir(project)
-    setup_script = project.expand_path("$dir_dist", "setup.py")
+    setup_script_dir = project.expand_path("$dir_dist")
 
     for command in distutils_commands:
         if is_string(command):
@@ -547,15 +549,17 @@ def execute_distutils(project, logger, python_env, distutils_commands, clean=Fal
         else:
             out_file = os.path.join(reports_dir, safe_log_file_name("__".join(command)))
         with open(out_file, "w") as out_f:
-            commands = python_env.executable + [setup_script]
+            commands = python_env.executable + ["-c",
+                                                "import sys; del sys.path[0]; "
+                                                "import runpy; runpy.run_module('build.__main__', run_name='__main__')"
+                                                ]
             if project.get_property("verbose"):
                 commands.append("-v")
-            if clean:
-                commands.extend(["clean", "--all"])
             if is_string(command):
                 commands.extend(command.split())
             else:
                 commands.extend(command)
+            commands.append(setup_script_dir)
             logger.debug("Executing distutils command: %s", commands)
             return_code = python_env.run_process_and_wait(commands, project.expand_path("$dir_dist"), out_f)
             if return_code != 0:
@@ -616,7 +620,11 @@ def flatten_and_quote(requirements_file):
 
 
 def format_single_dependency(dependency):
-    return '%s%s' % (dependency.name, pip_utils.build_dependency_version_string(dependency))
+    result = '%s%s' % (dependency.name, pip_utils.build_dependency_version_string(dependency))
+    markers = getattr(dependency, 'markers', None)
+    if markers:
+        result = '%s; %s' % (result, markers)
+    return result
 
 
 def build_install_dependencies_string(project):
@@ -642,6 +650,24 @@ def build_install_dependencies_string(project):
             dependencies[i] = dep[1:-1]
 
     return build_string_from_array(dependencies)
+
+
+def build_extras_require_string(project):
+    extras = project.extras_dependencies
+    if not extras:
+        return "{}"
+
+    indent = 8
+
+    result = "{\n"
+    for extra_name in sorted(extras.keys()):
+        deps = extras[extra_name]
+        formatted = [format_single_dependency(dep) for dep in deps if isinstance(dep, Dependency) and not dep.url]
+        result += " " * (indent + 4)
+        result += "'%s': %s,\n" % (extra_name, build_string_from_array(formatted, indent + 8))
+    result = result[:-2] + "\n"
+    result += " " * indent + "}"
+    return result
 
 
 def build_dependency_links_string(project):

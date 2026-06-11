@@ -17,7 +17,9 @@
 #   limitations under the License.
 
 import logging
+import random
 from os.path import normcase as nc
+from time import sleep
 
 from pybuilder.core import init, use_plugin, finalize
 from pybuilder.errors import BuildFailedException
@@ -31,11 +33,13 @@ use_plugin("python.coverage")
 
 @init(environments="ci")
 def init_coveralls_properties(project):
-    project.plugin_depends_on("coveralls", "~=3.0")
+    project.plugin_depends_on("coveralls", "~=4.0")
 
     project.set_property_if_unset("coveralls_dry_run", False)
     project.set_property_if_unset("coveralls_report", False)
     project.set_property_if_unset("coveralls_token_required", True)
+    project.set_property_if_unset("coveralls_retry_delay_min", 3)
+    project.set_property_if_unset("coveralls_retry_delay_max", 10)
 
 
 @finalize(environments="ci")
@@ -56,13 +60,15 @@ def finalize_coveralls(project, logger, reactor):
 
             workman = coverage(**coverage_config)
             workman.load()
+            workman.get_data()
 
-            if hasattr(workman, '_harvest_data'):
-                workman._harvest_data()  # pylint: disable=W0212
-            else:
-                workman.get_data()
+            return CoverallReporter(workman).coverage
 
-            return CoverallReporter(workman, workman.config).coverage
+        def wear(self, dry_run=False):
+            json_string = self.create_report()
+            if dry_run:
+                return json_string
+            return self.submit_report(json_string)
 
     coveralls_logger = logging.getLogger("coveralls")
     coveralls_logger.addHandler(logger)
@@ -85,25 +91,34 @@ def finalize_coveralls(project, logger, reactor):
                     staging = True
 
                 if dry_run:
-                    pyb_coveralls.wear(dry_run=True)
+                    report = pyb_coveralls.wear(dry_run=True)
                     logger.info("Coveralls dry-run coverage test has been completed!")
+                    logger.debug("Coveralls report %s", report)
                     staging = True
 
                 if staging:
                     return
 
-                try:
-                    report_result = pyb_coveralls.wear()
-                except CoverallsException as e:
-                    # https://github.com/TheKevJames/coveralls-python/issues/252
-                    if (pyb_coveralls.config["service_name"] == "github-actions" and
-                            hasattr(e.__cause__, "response") and
-                            hasattr(e.__cause__.response, "status_code") and
-                            e.__cause__.response.status_code == 422):
-                        pyb_coveralls = PybCoveralls(token_required=token_required, service_name="github")
+                while True:
+                    try:
                         report_result = pyb_coveralls.wear()
-                    else:
-                        raise
+                        break
+                    except CoverallsException as e:
+                        if (hasattr(e.__cause__, "response") and
+                                hasattr(e.__cause__.response, "status_code")):
+                            status_code = e.__cause__.response.status_code
+                            if status_code in (408, 429, 502, 503, 504):
+                                # Retry after a random delay
+                                logger.warn("Coveralls failed while uploading results, will retry: %s", e.__cause__)
+                                sleep(random.randint(int(project.get_property("coveralls_retry_delay_min")),
+                                                     int(project.get_property("coveralls_retry_delay_max"))))
+                            elif status_code == 422 and pyb_coveralls.config["service_name"] == "github-actions":
+                                # https://github.com/TheKevJames/coveralls-python/issues/252
+                                pyb_coveralls = PybCoveralls(token_required=token_required, service_name="github")
+                            else:
+                                raise
+                        else:
+                            raise
 
                 logger.debug("Coveralls result: %r", report_result)
                 logger.info("Coveralls coverage successfully submitted! %s @ %s",

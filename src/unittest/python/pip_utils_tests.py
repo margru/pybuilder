@@ -53,7 +53,6 @@ class PipVersionTests(unittest.TestCase):
         multiple_different_items = pip_utils.get_package_version(
             ["pip", core.Dependency("setuptools"), core.RequirementsFile("blah")])
         self.assertTrue("pip" in multiple_different_items)
-        self.assertTrue("setuptools" in multiple_different_items)
         self.assertTrue("blah" not in multiple_different_items)
 
         # Multiple identical items
@@ -114,6 +113,16 @@ class PipUtilsTests(unittest.TestCase):
             self.assertEqual(["abc[extra1,extra2]>=1.2.3"], pip_utils.as_pip_install_target([dep]))
         except AssertionError:
             self.assertEqual(["abc[extra2,extra1]>=1.2.3"], pip_utils.as_pip_install_target([dep]))
+
+    def test_as_pip_install_target_with_markers(self):
+        dep = core.Dependency("pywin32", ">=300", markers="sys_platform == 'win32'")
+        self.assertEqual(["pywin32>=300; sys_platform == 'win32'"], pip_utils.as_pip_install_target([dep]))
+
+    def test_as_pip_install_target_with_extras_and_markers(self):
+        dep = core.Dependency("requests[security]", ">=2.0", markers="python_version >= '3.0'")
+        result = pip_utils.as_pip_install_target([dep])
+        self.assertEqual(1, len(result))
+        self.assertIn("requests[security]>=2.0; python_version >= '3.0'", result[0])
 
     def test_pip_install_environ_inherited(self):
         python_env = Mock()

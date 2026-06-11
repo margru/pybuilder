@@ -8,6 +8,8 @@ from pathlib import Path
 from virtualenv.create.creator import Creator, CreatorMeta
 from virtualenv.info import fs_supports_symlink
 
+LOGGER = logging.getLogger(__name__)
+
 
 class ViaGlobalRefMeta(CreatorMeta):
     def __init__(self) -> None:
@@ -60,7 +62,12 @@ class ViaGlobalRefApi(Creator, ABC):
             help="give the virtual environment access to the system site-packages dir",
         )
         if not meta.can_symlink and not meta.can_copy:
-            msg = "neither symlink or copy method supported"
+            errors = []
+            if meta.symlink_error:
+                errors.append(f"symlink: {meta.symlink_error}")
+            if meta.copy_error:
+                errors.append(f"copy: {meta.copy_error}")
+            msg = f"neither symlink or copy method supported: {', '.join(errors)}"
             raise RuntimeError(msg)
         group = parser.add_mutually_exclusive_group()
         if meta.can_symlink:
@@ -88,10 +95,10 @@ class ViaGlobalRefApi(Creator, ABC):
         text = self.env_patch_text()
         if text:
             pth = self.purelib / "_virtualenv.pth"
-            logging.debug("create virtualenv import hook file %s", pth)
+            LOGGER.debug("create virtualenv import hook file %s", pth)
             pth.write_text("import _virtualenv", encoding="utf-8")
             dest_path = self.purelib / "_virtualenv.py"
-            logging.debug("create %s", dest_path)
+            LOGGER.debug("create %s", dest_path)
             dest_path.write_text(text, encoding="utf-8")
 
     def env_patch_text(self):

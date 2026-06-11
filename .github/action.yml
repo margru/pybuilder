@@ -19,18 +19,24 @@ inputs:
   deploy-on-branch:
     description: 'Deploy on Branches'
     required: true
+  release-app-id:
+    description: 'GitHub App ID for generating release tokens'
+    required: false
+    default: ''
+  release-app-private-key:
+    description: 'GitHub App private key for generating release tokens'
+    required: false
+    default: ''
 runs:
   using: "composite"
   steps:
-    - name: Configure
-      if: |
-        contains(fromJSON(inputs.deploy-on-os), runner.os) &&
-        contains(fromJSON(inputs.deploy-on-python), inputs.python-version) &&
-        contains(fromJSON(inputs.deploy-on-branch), github.ref) &&
-        inputs.with-venv == 'true'
-      shell: bash
-      run: |
-        echo "PYB_EXTRA_ARGS=+upload" >> $GITHUB_ENV
+    - name: Generate Release Token
+      id: release-token
+      if: inputs.release-app-id != '' && inputs.release-app-private-key != ''
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ inputs.release-app-id }}
+        private-key: ${{ inputs.release-app-private-key }}
     - name: Build
       if: |
         !(inputs.with-homebrew == 'true' && runner.os != 'macOS' ||
@@ -48,7 +54,13 @@ runs:
         with-venv: '${{ inputs.with-venv }}'
         install-pyb: 'false'
         pyb-command: $PYTHON build.py
-        pyb-extra-args: +install ${{ env.PYB_EXTRA_ARGS }}
+        pyb-extra-args: +install
+        is-upload: >-
+          ${{ contains(fromJSON(inputs.deploy-on-os), runner.os)
+          && contains(fromJSON(inputs.deploy-on-python), inputs.python-version)
+          && contains(fromJSON(inputs.deploy-on-branch), github.ref)
+          && inputs.with-venv == 'true' }}
+        github-token: ${{ steps.release-token.outputs.token || github.token }}
     - name: Print Logs on Failure
       if: failure()
       shell: bash

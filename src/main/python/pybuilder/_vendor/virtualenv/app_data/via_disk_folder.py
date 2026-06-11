@@ -37,6 +37,8 @@ from virtualenv.version import __version__
 
 from .base import AppData, ContentStore
 
+LOGGER = logging.getLogger(__name__)
+
 
 class AppDataDiskFolder(AppData):
     """Store the application data on the disk within a folder layout."""
@@ -54,7 +56,7 @@ class AppDataDiskFolder(AppData):
         return str(self.lock.path)
 
     def reset(self):
-        logging.debug("reset app data folder %s", self.lock.path)
+        LOGGER.debug("reset app data folder %s", self.lock.path)
         safe_delete(self.lock.path)
 
     def close(self):
@@ -77,7 +79,7 @@ class AppDataDiskFolder(AppData):
 
     @property
     def py_info_at(self):
-        return self.lock / "py_info" / "1"
+        return self.lock / "py_info" / "2"
 
     def py_info(self, path):
         return PyInfoStoreDisk(self.py_info_at, path)
@@ -106,10 +108,9 @@ class AppDataDiskFolder(AppData):
 
 
 class JSONStoreDisk(ContentStore, ABC):
-    def __init__(self, in_folder, key, msg, msg_args) -> None:
+    def __init__(self, in_folder, key, msg_args) -> None:
         self.in_folder = in_folder
         self.key = key
-        self.msg = msg
         self.msg_args = (*msg_args, self.file)
 
     @property
@@ -128,7 +129,7 @@ class JSONStoreDisk(ContentStore, ABC):
         except Exception:  # noqa: BLE001, S110
             pass
         else:
-            logging.debug("got %s from %s", self.msg, self.msg_args)
+            LOGGER.debug("got %s %s from %s", *self.msg_args)
             return data
         if bad_format:
             with suppress(OSError):  # reading and writing on the same file may cause race on multiple processes
@@ -137,7 +138,7 @@ class JSONStoreDisk(ContentStore, ABC):
 
     def remove(self):
         self.file.unlink()
-        logging.debug("removed %s at %s", self.msg, self.msg_args)
+        LOGGER.debug("removed %s %s at %s", *self.msg_args)
 
     @contextmanager
     def locked(self):
@@ -148,13 +149,13 @@ class JSONStoreDisk(ContentStore, ABC):
         folder = self.file.parent
         folder.mkdir(parents=True, exist_ok=True)
         self.file.write_text(json.dumps(content, sort_keys=True, indent=2), encoding="utf-8")
-        logging.debug("wrote %s at %s", self.msg, self.msg_args)
+        LOGGER.debug("wrote %s %s at %s", *self.msg_args)
 
 
 class PyInfoStoreDisk(JSONStoreDisk):
     def __init__(self, in_folder, path) -> None:
         key = sha256(str(path).encode("utf-8")).hexdigest()
-        super().__init__(in_folder, key, "python info of %s", (path,))
+        super().__init__(in_folder, key, ("python info of", path))
 
 
 class EmbedDistributionUpdateStoreDisk(JSONStoreDisk):
@@ -162,8 +163,7 @@ class EmbedDistributionUpdateStoreDisk(JSONStoreDisk):
         super().__init__(
             in_folder,
             distribution,
-            "embed update of distribution %s",
-            (distribution,),
+            ("embed update of distribution", distribution),
         )
 
 

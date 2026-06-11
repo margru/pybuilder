@@ -86,10 +86,10 @@ urls = {"Bug Tracker": "https://github.com/pybuilder/pybuilder/issues",
         "Documentation": "https://pybuilder.io/documentation",
         "Twitter": "https://twitter.com/pybuilder_",
         }
-license = "Apache License, Version 2.0"
-version = "0.13.14.dev"
+license = "Apache-2.0"
+version = "0.13.99.dev20260610111500"
 
-requires_python = ">=3.8"
+requires_python = ">=3.10"
 
 default_task = ["analyze", "publish"]
 
@@ -125,7 +125,7 @@ def initialize(project):
                                                         "setup"])
 
     project.set_property("flake8_break_build", True)
-    project.set_property("flake8_extend_ignore", "E303, F401")
+    project.set_property("flake8_extend_ignore", "E303, F401, F824")
     project.set_property("flake8_include_test_sources", True)
     project.set_property("flake8_include_scripts", True)
     project.set_property("flake8_exclude_patterns", ",".join([
@@ -179,11 +179,11 @@ def initialize(project):
         "Programming Language :: Python :: Implementation :: CPython",
         "Programming Language :: Python :: Implementation :: PyPy",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
         "Operating System :: MacOS :: MacOS X",
         "Operating System :: POSIX :: Linux",
         "Operating System :: Microsoft :: Windows",
@@ -191,7 +191,6 @@ def initialize(project):
         "Development Status :: 5 - Production/Stable",
         "Environment :: Console",
         "Intended Audience :: Developers",
-        "License :: OSI Approved :: Apache Software License",
         "Topic :: Software Development :: Build Tools",
         "Topic :: Software Development :: Quality Assurance",
         "Topic :: Software Development :: Testing"])

@@ -192,6 +192,7 @@ if __name__ == '__main__':
         package_data = {},
         include_package_data = False,
         install_requires = [],
+        extras_require = {},
         dependency_links = ['https://github.com/downloads/halimath/pyassert/pyassert-0.2.2.tar.gz'],
         zip_safe = True,
         cmdclass = {'install': install,'build_py': build_py},

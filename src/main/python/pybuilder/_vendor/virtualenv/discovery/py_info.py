@@ -11,6 +11,7 @@ import logging
 import os
 import platform
 import re
+import struct
 import sys
 import sysconfig
 import warnings
@@ -18,6 +19,7 @@ from collections import OrderedDict, namedtuple
 from string import digits
 
 VersionInfo = namedtuple("VersionInfo", ["major", "minor", "micro", "releaselevel", "serial"])  # noqa: PYI024
+LOGGER = logging.getLogger(__name__)
 
 
 def _get_path_extensions():
@@ -25,7 +27,7 @@ def _get_path_extensions():
 
 
 EXTENSIONS = _get_path_extensions()
-_CONF_VAR_RE = re.compile(r"\{\w+\}")
+_CONF_VAR_RE = re.compile(r"\{\w+}")
 
 
 class PythonInfo:  # noqa: PLR0904
@@ -43,7 +45,10 @@ class PythonInfo:  # noqa: PLR0904
 
         # this is a tuple in earlier, struct later, unify to our own named tuple
         self.version_info = VersionInfo(*sys.version_info)
-        self.architecture = 64 if sys.maxsize > 2**32 else 32
+        # Use the same implementation as found in stdlib platform.architecture
+        # to account for platforms where the maximum integer is not equal the
+        # pointer size.
+        self.architecture = 32 if struct.calcsize("P") == 4 else 64  # noqa: PLR2004
 
         # Used to determine some file names.
         # See `CPython3Windows.python_zip()`.
@@ -51,6 +56,7 @@ class PythonInfo:  # noqa: PLR0904
 
         self.version = sys.version
         self.os = os.name
+        self.free_threaded = sysconfig.get_config_var("Py_GIL_DISABLED") == 1
 
         # information about the prefix - determines python home
         self.prefix = abs_path(getattr(sys, "prefix", None))  # prefix we think
@@ -117,6 +123,11 @@ class PythonInfo:  # noqa: PLR0904
 
         self.sysconfig_vars = {i: sysconfig.get_config_var(i or "") for i in config_var_keys}
 
+        if "TCL_LIBRARY" in os.environ:
+            self.tcl_lib, self.tk_lib = self._get_tcl_tk_libs()
+        else:
+            self.tcl_lib, self.tk_lib = None, None
+
         confs = {
             k: (self.system_prefix if v is not None and v.startswith(self.prefix) else v)
             for k, v in self.sysconfig_vars.items()
@@ -126,36 +137,112 @@ class PythonInfo:  # noqa: PLR0904
         self.max_size = getattr(sys, "maxsize", getattr(sys, "maxint", None))
         self._creators = None
 
+    @staticmethod
+    def _get_tcl_tk_libs():
+        """
+        Detects the tcl and tk libraries using tkinter.
+
+        This works reliably but spins up tkinter, which is heavy if you don't need it.
+        """
+        tcl_lib, tk_lib = None, None
+        try:
+            import tkinter as tk  # noqa: PLC0415
+        except ImportError:
+            pass
+        else:
+            try:
+                tcl = tk.Tcl()
+                tcl_lib = tcl.eval("info library")
+
+                # Try to get TK library path directly first
+                try:
+                    tk_lib = tcl.eval("set tk_library")
+                    if tk_lib and os.path.isdir(tk_lib):
+                        pass  # We found it directly
+                    else:
+                        tk_lib = None  # Reset if invalid
+                except tk.TclError:
+                    tk_lib = None
+
+                # If direct query failed, try constructing the path
+                if tk_lib is None:
+                    tk_version = tcl.eval("package require Tk")
+                    tcl_parent = os.path.dirname(tcl_lib)
+
+                    # Try different version formats
+                    version_variants = [
+                        tk_version,  # Full version like "8.6.12"
+                        ".".join(tk_version.split(".")[:2]),  # Major.minor like "8.6"
+                        tk_version.split(".")[0],  # Just major like "8"
+                    ]
+
+                    for version in version_variants:
+                        tk_lib_path = os.path.join(tcl_parent, f"tk{version}")
+                        if not os.path.isdir(tk_lib_path):
+                            continue
+                        # Validate it's actually a TK directory
+                        if os.path.exists(os.path.join(tk_lib_path, "tk.tcl")):
+                            tk_lib = tk_lib_path
+                            break
+
+            except tk.TclError:
+                pass
+
+        return tcl_lib, tk_lib
+
     def _fast_get_system_executable(self):
         """Try to get the system executable by just looking at properties."""
-        if self.real_prefix or (  # noqa: PLR1702
-            self.base_prefix is not None and self.base_prefix != self.prefix
-        ):  # if this is a virtual environment
-            if self.real_prefix is None:
-                base_executable = getattr(sys, "_base_executable", None)  # some platforms may set this to help us
-                if base_executable is not None:  # noqa: SIM102 # use the saved system executable if present
-                    if sys.executable != base_executable:  # we know we're in a virtual environment, cannot be us
-                        if os.path.exists(base_executable):
-                            return base_executable
-                        # Python may return "python" because it was invoked from the POSIX virtual environment
-                        # however some installs/distributions do not provide a version-less "python" binary in
-                        # the system install location (see PEP 394) so try to fallback to a versioned binary.
-                        #
-                        # Gate this to Python 3.11 as `sys._base_executable` path resolution is now relative to
-                        # the 'home' key from pyvenv.cfg which often points to the system install location.
-                        major, minor = self.version_info.major, self.version_info.minor
-                        if self.os == "posix" and (major, minor) >= (3, 11):
-                            # search relative to the directory of sys._base_executable
-                            base_dir = os.path.dirname(base_executable)
-                            for base_executable in [
-                                os.path.join(base_dir, exe) for exe in (f"python{major}", f"python{major}.{minor}")
-                            ]:
-                                if os.path.exists(base_executable):
-                                    return base_executable
-            return None  # in this case we just can't tell easily without poking around FS and calling them, bail
         # if we're not in a virtual environment, this is already a system python, so return the original executable
         # note we must choose the original and not the pure executable as shim scripts might throw us off
-        return self.original_executable
+        if not (self.real_prefix or (self.base_prefix is not None and self.base_prefix != self.prefix)):
+            return self.original_executable
+
+        # if this is NOT a virtual environment, can't determine easily, bail out
+        if self.real_prefix is not None:
+            return None
+
+        base_executable = getattr(sys, "_base_executable", None)  # some platforms may set this to help us
+        if base_executable is None:  # use the saved system executable if present
+            return None
+
+        # we know we're in a virtual environment, can not be us
+        if sys.executable == base_executable:
+            return None
+
+        # We're not in a venv and base_executable exists; use it directly
+        if os.path.exists(base_executable):
+            return base_executable
+
+        # Try fallback for POSIX virtual environments
+        return self._try_posix_fallback_executable(base_executable)
+
+    def _try_posix_fallback_executable(self, base_executable):
+        """
+        Try to find a versioned Python binary as fallback for POSIX virtual environments.
+
+        Python may return "python" because it was invoked from the POSIX virtual environment
+        however some installs/distributions do not provide a version-less "python" binary in
+        the system install location (see PEP 394) so try to fallback to a versioned binary.
+
+        Gate this to Python 3.11 as `sys._base_executable` path resolution is now relative to
+        the 'home' key from pyvenv.cfg which often points to the system install location.
+        """
+        major, minor = self.version_info.major, self.version_info.minor
+        if self.os != "posix" or (major, minor) < (3, 11):
+            return None
+
+        # search relative to the directory of sys._base_executable
+        base_dir = os.path.dirname(base_executable)
+        candidates = [f"python{major}", f"python{major}.{minor}"]
+        if self.implementation == "PyPy":
+            candidates.extend(["pypy", "pypy3", f"pypy{major}", f"pypy{major}.{minor}"])
+
+        for candidate in candidates:
+            full_path = os.path.join(base_dir, candidate)
+            if os.path.exists(full_path):
+                return full_path
+
+        return None  # in this case we just can't tell easily without poking around FS and calling them, bail
 
     def install_path(self, key):
         result = self.distutils_install.get(key)
@@ -213,7 +300,9 @@ class PythonInfo:  # noqa: PLR0904
         return self.base_prefix is not None
 
     def sysconfig_path(self, key, config_var=None, sep=os.sep):
-        pattern = self.sysconfig_paths[key]
+        pattern = self.sysconfig_paths.get(key)
+        if pattern is None:
+            return ""
         if config_var is None:
             config_var = self.sysconfig_vars
         else:
@@ -289,7 +378,12 @@ class PythonInfo:  # noqa: PLR0904
 
     @property
     def spec(self):
-        return "{}{}-{}".format(self.implementation, ".".join(str(i) for i in self.version_info), self.architecture)
+        return "{}{}{}-{}".format(
+            self.implementation,
+            ".".join(str(i) for i in self.version_info),
+            "t" if self.free_threaded else "",
+            self.architecture,
+        )
 
     @classmethod
     def clear_cache(cls, app_data):
@@ -299,7 +393,7 @@ class PythonInfo:  # noqa: PLR0904
         clear(app_data)
         cls._cache_exe_discovery.clear()
 
-    def satisfies(self, spec, impl_must_match):  # noqa: C901
+    def satisfies(self, spec, impl_must_match):  # noqa: C901, PLR0911, PLR0912
         """Check if a given specification can be satisfied by the this python interpreter instance."""
         if spec.path:
             if self.executable == os.path.abspath(spec.path):
@@ -324,6 +418,23 @@ class PythonInfo:  # noqa: PLR0904
 
         if spec.architecture is not None and spec.architecture != self.architecture:
             return False
+
+        if spec.free_threaded is not None and spec.free_threaded != self.free_threaded:
+            return False
+
+        if spec.version_specifier is not None:
+            version_info = self.version_info
+            release = f"{version_info.major}.{version_info.minor}.{version_info.micro}"
+            if version_info.releaselevel != "final":
+                suffix = {
+                    "alpha": "a",
+                    "beta": "b",
+                    "candidate": "rc",
+                }.get(version_info.releaselevel)
+                if suffix is not None:
+                    release = f"{release}{suffix}{version_info.serial}"
+            if not spec.version_specifier.contains(release):
+                return False
 
         for our, req in zip(self.version_info[0:3], (spec.major, spec.minor, spec.micro)):
             if req is not None and our is not None and our != req:
@@ -386,7 +497,7 @@ class PythonInfo:  # noqa: PLR0904
             except Exception as exception:
                 if raise_on_error:
                     raise
-                logging.info("ignore %s due cannot resolve system due to %r", proposed.original_executable, exception)
+                LOGGER.info("ignore %s due cannot resolve system due to %r", proposed.original_executable, exception)
                 proposed = None
         return proposed
 
@@ -412,12 +523,12 @@ class PythonInfo:  # noqa: PLR0904
             if prefix in prefixes:
                 if len(prefixes) == 1:
                     # if we're linking back to ourselves accept ourselves with a WARNING
-                    logging.info("%r links back to itself via prefixes", target)
+                    LOGGER.info("%r links back to itself via prefixes", target)
                     target.system_executable = target.executable
                     break
                 for at, (p, t) in enumerate(prefixes.items(), start=1):
-                    logging.error("%d: prefix=%s, info=%r", at, p, t)
-                logging.error("%d: prefix=%s, info=%r", len(prefixes) + 1, prefix, target)
+                    LOGGER.error("%d: prefix=%s, info=%r", at, p, t)
+                LOGGER.error("%d: prefix=%s, info=%r", len(prefixes) + 1, prefix, target)
                 msg = "prefixes are causing a circle {}".format("|".join(prefixes.keys()))
                 raise RuntimeError(msg)
             prefixes[prefix] = target
@@ -432,9 +543,9 @@ class PythonInfo:  # noqa: PLR0904
     def discover_exe(self, app_data, prefix, exact=True, env=None):  # noqa: FBT002
         key = prefix, exact
         if key in self._cache_exe_discovery and prefix:
-            logging.debug("discover exe from cache %s - exact %s: %r", prefix, exact, self._cache_exe_discovery[key])
+            LOGGER.debug("discover exe from cache %s - exact %s: %r", prefix, exact, self._cache_exe_discovery[key])
             return self._cache_exe_discovery[key]
-        logging.debug("discover exe for %s in %s", self, prefix)
+        LOGGER.debug("discover exe for %s in %s", self, prefix)
         # we don't know explicitly here, do some guess work - our executable name should tell
         possible_names = self._find_possible_exe_names()
         possible_folders = self._find_possible_folders(prefix)
@@ -450,7 +561,7 @@ class PythonInfo:  # noqa: PLR0904
             info = self._select_most_likely(discovered, self)
             folders = os.pathsep.join(possible_folders)
             self._cache_exe_discovery[key] = info
-            logging.debug("no exact match found, chosen most similar of %s within base folders %s", info, folders)
+            LOGGER.debug("no exact match found, chosen most similar of %s within base folders %s", info, folders)
             return info
         msg = "failed to detect {} in {}".format("|".join(possible_names), os.pathsep.join(possible_folders))
         raise RuntimeError(msg)
@@ -469,7 +580,7 @@ class PythonInfo:  # noqa: PLR0904
                 if item == "version_info":
                     found, searched = ".".join(str(i) for i in found), ".".join(str(i) for i in searched)
                 executable = info.executable
-                logging.debug("refused interpreter %s because %s differs %s != %s", executable, item, found, searched)
+                LOGGER.debug("refused interpreter %s because %s differs %s != %s", executable, item, found, searched)
                 if exact is False:
                     discovered.append(info)
                 break
@@ -521,10 +632,14 @@ class PythonInfo:  # noqa: PLR0904
         for name in self._possible_base():
             for at in (3, 2, 1, 0):
                 version = ".".join(str(i) for i in self.version_info[:at])
-                for arch in [f"-{self.architecture}", ""]:
-                    for ext in EXTENSIONS:
-                        candidate = f"{name}{version}{arch}{ext}"
-                        name_candidate[candidate] = None
+                mods = [""]
+                if self.free_threaded:
+                    mods.append("t")
+                for mod in mods:
+                    for arch in [f"-{self.architecture}", ""]:
+                        for ext in EXTENSIONS:
+                            candidate = f"{name}{version}{mod}{arch}{ext}"
+                            name_candidate[candidate] = None
         return list(name_candidate.keys())
 
     def _possible_base(self):

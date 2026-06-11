@@ -23,6 +23,17 @@ deactivate () {
         unset _OLD_VIRTUAL_PYTHONHOME
     fi
 
+    if ! [ -z "${_OLD_VIRTUAL_TCL_LIBRARY+_}" ]; then
+        TCL_LIBRARY="$_OLD_VIRTUAL_TCL_LIBRARY"
+        export TCL_LIBRARY
+        unset _OLD_VIRTUAL_TCL_LIBRARY
+    fi
+    if ! [ -z "${_OLD_VIRTUAL_TK_LIBRARY+_}" ]; then
+        TK_LIBRARY="$_OLD_VIRTUAL_TK_LIBRARY"
+        export TK_LIBRARY
+        unset _OLD_VIRTUAL_TK_LIBRARY
+    fi
+
     # The hash command must be called to get it to forget past
     # commands. Without forgetting past commands the $PATH changes
     # we made may not be respected
@@ -45,18 +56,26 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV='__VIRTUAL_ENV__'
+if [ ! -d __VIRTUAL_ENV__ ]; then
+    echo "Virtual environment directory __VIRTUAL_ENV__ does not exist!" >&2
+    CURRENT_PATH=$(realpath "${0}")
+    CURRENT_DIR=$(dirname "${CURRENT_PATH}")
+    VIRTUAL_ENV="$(realpath "${CURRENT_DIR}/../")"
+else
+    VIRTUAL_ENV=__VIRTUAL_ENV__
+fi
+
 if ([ "$OSTYPE" = "cygwin" ] || [ "$OSTYPE" = "msys" ]) && $(command -v cygpath &> /dev/null) ; then
     VIRTUAL_ENV=$(cygpath -u "$VIRTUAL_ENV")
 fi
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"
-PATH="$VIRTUAL_ENV/__BIN_NAME__:$PATH"
+PATH="$VIRTUAL_ENV/"__BIN_NAME__":$PATH"
 export PATH
 
-if [ "x__VIRTUAL_PROMPT__" != x ] ; then
-    VIRTUAL_ENV_PROMPT="__VIRTUAL_PROMPT__"
+if [ "x"__VIRTUAL_PROMPT__ != x ] ; then
+    VIRTUAL_ENV_PROMPT=__VIRTUAL_PROMPT__
 else
     VIRTUAL_ENV_PROMPT=$(basename "$VIRTUAL_ENV")
 fi
@@ -66,6 +85,22 @@ export VIRTUAL_ENV_PROMPT
 if ! [ -z "${PYTHONHOME+_}" ] ; then
     _OLD_VIRTUAL_PYTHONHOME="$PYTHONHOME"
     unset PYTHONHOME
+fi
+
+if [ __TCL_LIBRARY__ != "" ]; then
+    if ! [ -z "${TCL_LIBRARY+_}" ] ; then
+        _OLD_VIRTUAL_TCL_LIBRARY="$TCL_LIBRARY"
+    fi
+    TCL_LIBRARY=__TCL_LIBRARY__
+    export TCL_LIBRARY
+fi
+
+if [ __TK_LIBRARY__ != "" ]; then
+    if ! [ -z "${TK_LIBRARY+_}" ] ; then
+        _OLD_VIRTUAL_TK_LIBRARY="$TK_LIBRARY"
+    fi
+    TK_LIBRARY=__TK_LIBRARY__
+    export TK_LIBRARY
 fi
 
 if [ -z "${VIRTUAL_ENV_DISABLE_PROMPT-}" ] ; then

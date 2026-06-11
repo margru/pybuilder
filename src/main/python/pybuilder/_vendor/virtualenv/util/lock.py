@@ -11,13 +11,14 @@ from threading import Lock, RLock
 
 from filelock import FileLock, Timeout
 
+LOGGER = logging.getLogger(__name__)
+
 
 class _CountedFileLock(FileLock):
     def __init__(self, lock_file) -> None:
         parent = os.path.dirname(lock_file)
-        if not os.path.isdir(parent):
-            with suppress(OSError):
-                os.makedirs(parent)
+        with suppress(OSError):
+            os.makedirs(parent, exist_ok=True)
 
         super().__init__(lock_file)
         self.count = 0
@@ -27,16 +28,22 @@ class _CountedFileLock(FileLock):
         if not self.thread_safe.acquire(timeout=-1 if timeout is None else timeout):
             raise Timeout(self.lock_file)
         if self.count == 0:
-            super().acquire(timeout, poll_interval)
+            try:
+                super().acquire(timeout, poll_interval)
+            except BaseException:
+                self.thread_safe.release()
+                raise
         self.count += 1
 
     def release(self, force=False):  # noqa: FBT002
         with self.thread_safe:
             if self.count > 0:
-                self.thread_safe.release()
-            if self.count == 1:
-                super().release(force=force)
-            self.count = max(self.count - 1, 0)
+                if self.count == 1:
+                    super().release(force=force)
+                self.count -= 1
+                if self.count == 0:
+                    # if we have no more users of this lock, release the thread lock
+                    self.thread_safe.release()
 
 
 _lock_store = {}
@@ -109,14 +116,14 @@ class ReentrantFileLock(PathLockBase):
         # a lock, but that lock might then become expensive, and it's not clear where that lock should live.
         # Instead here we just ignore if we fail to create the directory.
         with suppress(OSError):
-            os.makedirs(str(self.path))
+            os.makedirs(str(self.path), exist_ok=True)
 
         try:
             lock.acquire(0.0001)
         except Timeout:
             if no_block:
                 raise
-            logging.debug("lock file %s present, will block until released", lock.lock_file)
+            LOGGER.debug("lock file %s present, will block until released", lock.lock_file)
             lock.release()  # release the acquire try from above
             lock.acquire()
 

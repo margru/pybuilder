@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - master
+permissions:
+  contents: write
+
 jobs:
   build-primary:
     runs-on: ${{ matrix.os }}
@@ -14,12 +17,11 @@ jobs:
         os:
           - ubuntu-latest
         python-version:
-          - '3.13-dev'
+          - '3.14'
+          - '3.13'
           - '3.12'
           - '3.11'
           - '3.10'
-          - '3.9'
-          - '3.8'
         with-venv:
           - 'true'
           - 'false'
@@ -28,15 +30,19 @@ jobs:
       TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: ./.github/
         with:
           python-version: '${{ matrix.python-version }}'
           with-venv: '${{ matrix.with-venv }}'
           with-homebrew: 'false'
-          deploy-on-python: '["3.11"]'
+          deploy-on-python: '["3.13"]'
           deploy-on-os: '["Linux"]'
           deploy-on-branch: '["refs/heads/master"]'
+          release-app-id: ${{ secrets.PYBUILDER_RELEASE_APP_ID }}
+          release-app-private-key: ${{ secrets.PYBUILDER_RELEASE_APP_PRIVATE_KEY }}
   build-secondary:
     runs-on: ${{ matrix.os }}
     continue-on-error: false
@@ -46,33 +52,25 @@ jobs:
       matrix:
         os:
           - windows-latest
-          - macos-13
+          - macos-15-intel
         python-version:
+          - '3.14'
+          - '3.13'
           - '3.12'
           - '3.11'
           - '3.10'
-          - '3.9'
-          - '3.8'
         with-venv:
           - 'true'
           - 'false'
         with-homebrew:
           - 'true'
           - 'false'
-        exclude:
-          - os: macos-11
-            python-version: '3.8'
-            with-homebrew: 'true'
-          - os: macos-12
-            python-version: '3.8'
-            with-homebrew: 'true'
-          - os: macos-13
-            python-version: '3.8'
-            with-homebrew: 'true'
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: ./.github/
         with:
           python-version: '${{ matrix.python-version }}'
@@ -91,9 +89,11 @@ jobs:
         os:
           - ubuntu-latest
         python-version:
-          - '3.14-dev'
-          - 'pypy-3.8'
-          - 'pypy-3.9'
+          - '3.15-dev'
+          - '3.14t'
+          - '3.13t'
+          - 'pypy-3.10'
+          - 'pypy-3.11'
         with-venv:
           - 'true'
           - 'false'
@@ -103,7 +103,9 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: ./.github/
         with:
           python-version: '${{ matrix.python-version }}'
